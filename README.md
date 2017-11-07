@@ -7,9 +7,14 @@ Your repo's config file (.git/config) must contain the following section:
     privateToken = "xyz123abc456pqr789st"
 ```
 
-The working directory must be within a checkout of the specified project.
+You can get your private token from http://gitlab.example.com/profile/account
 
-Open MRs are imported as [git series].
+The working directory must be within a checkout of the specified project. (In
+particular, if you try to import MRs from multiple projects into a single repo,
+you'll probably get collisions in terms of branch names.)
+
+MRs are imported as [git series]. By default, only open MRs are imported
+(override with `-a`).
 
 [git series]: https://github.com/git-series/git-series
 
