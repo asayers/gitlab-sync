@@ -103,6 +103,9 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     for acker in ackers {
         tags.push(format!("Acked-by: {} <{}>", acker, lookup_email(&acker).trim()));
     }
+    for asgn in mr.assignees.iter().flat_map(|x|x) {
+        tags.push(format!("Cc: {} <{}>", asgn.name, lookup_email(&asgn.name).trim()));
+    }
     if !tags.is_empty() { sections.push(tags.join("\n")); }
     let cover_msg = sections.join("\n\n") + "\n";
     let blob = repo.blob(cover_msg.as_bytes()).unwrap();
