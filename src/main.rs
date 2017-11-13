@@ -54,13 +54,14 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
                             { Ok(x) => x, Err(e) => { error!("{:?}", e); return (); } };
     let source = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.source_branch))
                             { Ok(x) => x, Err(e) => { error!("{:?}", e); return (); } };
-    let base = if repo.graph_descendant_of(source, target).unwrap() {
-        // it's already merged! let's not update the base.
-        // TODO
-        repo.refname_to_id(&format!("{}:base", refname)).unwrap()
-    } else {
-        repo.merge_base(target, source).unwrap()
-    };
+    // let base = if repo.graph_descendant_of(source, target).unwrap() {
+    //     // it's already merged! let's not update the base.
+    //     // TODO
+    //     repo.refname_to_id(&format!("{}:base", refname)).unwrap()
+    // } else {
+    //     repo.merge_base(target, source).unwrap()
+    // };
+    let base = repo.merge_base(target, source).unwrap();
     tree.insert("base",   base  , 0o160000).unwrap();
     tree.insert("series", source, 0o160000).unwrap();
 
