@@ -68,14 +68,14 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     let mut notes_tree = repo.treebuilder(None).unwrap();
     let mut ackers = BTreeSet::new();
     if mr.user_notes_count > 0 {
-        for note in gl.merge_request_notes(project_id, mr.id).unwrap() {
+        for note in gl.merge_request_notes(project_id, mr.iid).unwrap() {
             if note.system { continue; }
             let contents = format!("From: {} <{}>\nDate: {}\n\n{}\n", note.author.name, lookup_email(&note.author.name).trim(), note.created_at.to_rfc2822(), note.body);
             let blob = repo.blob(contents.as_bytes()).unwrap();
             notes_tree.insert(&format!("{}", note.id), blob, 0o100644).unwrap();
-            if note.upvote || note.body.contains("LGTM") ||
-                              note.body.contains("+1") ||
-                              note.body.contains("Looks good") {
+            if note.body.contains("LGTM") ||
+                    note.body.contains("+1") ||
+                    note.body.contains("Looks good") {
                 ackers.insert(note.author.name);  // FIXME: this ^ may be too loose
             }
         }
