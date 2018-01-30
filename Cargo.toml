@@ -4,8 +4,8 @@ name = "gitlab-sync"
 version = "0.1.0"
 
 [dependencies]
-clap = "2.27.0"
-git2 = "0.6.8"
-gitlab = "0.902"
-log = "0.3.8"
-loggerv = "0.4.0"
+clap = "2.29"
+git2 = "0.6"
+gitlab = "0.904"
+log = "0.4"
+loggerv = "0.7"
