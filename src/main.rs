@@ -116,7 +116,7 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     let tree_oid = tree.write().unwrap();
     let tree_ref = repo.find_tree(tree_oid).unwrap();
     let ts = Time::new(mr.updated_at.timestamp(), 0);
-    let author_sig = Signature::new(&mr.author.name, lookup_email(&mr.author.name).trim(), &ts).unwrap();
+    let author_sig = Signature::new(format_name(&mr.author.name), format_name(&lookup_email(&mr.author.name)), &ts).unwrap();
     let committer_sig = repo.signature().unwrap();
     let msg = format!("Import latest version of !{}", mr.iid);
     let parent_hack = repo.find_commit(source).unwrap();
@@ -159,11 +159,20 @@ fn lookup_email(author: &str) -> String {
         ).output().unwrap().stdout).unwrap()
 }
 
-fn last_update() -> String {
-    String::from_utf8(Command::new("git").args(
-        &["for-each-ref",
-          "refs/heads/git-series",
-          "--format='%(authordate)'",
-          "--sort='-authordate'"]
-        ).output().unwrap().stdout).unwrap()
+fn format_name(name: &str) -> &str {
+    let foo = name.trim();
+    if foo.is_empty() {
+        "UNKNOWN"
+    } else {
+        foo
+    }
 }
+
+// fn last_update() -> String {
+//     String::from_utf8(Command::new("git").args(
+//         &["for-each-ref",
+//           "refs/heads/git-series",
+//           "--format='%(authordate)'",
+//           "--sort='-authordate'"]
+//         ).output().unwrap().stdout).unwrap()
+// }
