@@ -2,6 +2,7 @@
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 name = "gitlab-sync"
 version = "0.1.0"
+license = "unlicense"
 
 [dependencies]
 clap = "2.29"
