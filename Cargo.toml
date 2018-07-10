@@ -5,9 +5,11 @@ version = "0.1.0"
 license = "unlicense"
 
 [dependencies]
-clap = "2.29"
+docopt = "1.0.0"
 env_logger = "0.5.10"
 failure = "0.1.1"
 git2 = "0.6"
 gitlab = "0.904"
 log = "0.4.3"
+serde = "1.0.70"
+serde_derive = "1.0.70"

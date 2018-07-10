@@ -1,26 +1,37 @@
+extern crate docopt;
 extern crate gitlab;
 extern crate failure;
 extern crate git2;
-extern crate clap;
 #[macro_use] extern crate log;
 extern crate env_logger;
+#[macro_use] extern crate serde_derive;
+extern crate serde;
 
 use std::process::Command;
 use std::collections::BTreeSet;
 use gitlab::{Gitlab, ProjectId, MergeRequestStateFilter, MergeRequestState, MergeRequest};
 use git2::{Repository, Commit, Time, Signature};
-use clap::{Arg, App, ArgMatches};
 
 type Result<T> = std::result::Result<T, failure::Error>;
 
 const REMOTE: &str = "origin";
 
-fn main() -> Result<()> {
-    let args = App::new("app")
-            .arg(Arg::with_name("all").short("a").help("Download all MRs (default is open only)"))
-            .arg(Arg::with_name("force").short("f").help("Update all MRs (even unchanged)"))
-            .get_matches();
+const USAGE: &str = "
+Usage: gitlab-sync [options]
 
+Options:
+    -a, --all     Download all MRs (default is open only)
+    -f, --force   Update all MRs (even unchanged)
+";
+
+#[derive(Deserialize)]
+struct Args {
+    flag_all: bool,
+    flag_force: bool,
+}
+
+fn main() -> Result<()> {
+    let args: Args = docopt::Docopt::new(USAGE)?.parse()?.deserialize()?;
     env_logger::init();
 
     let mut repo = Repository::open_from_env()?;
@@ -36,7 +47,7 @@ fn main() -> Result<()> {
     println!("Fetching from {}", REMOTE);
     git_fetch(REMOTE);
 
-    let mrs = if args.is_present("all") {
+    let mrs = if args.flag_all {
         gl.merge_requests(project_id).unwrap()
     } else {
         // TODO: only get MRs which changed since last_update()
@@ -129,7 +140,7 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
                 &[&parent_hack]).unwrap();
             println!("Created !{}", mr.iid);
         }
-        Some(ref parent) if parent.tree_id() == tree_oid && !args.is_present("force") => {
+        Some(ref parent) if parent.tree_id() == tree_oid && !args.flag_force => {
             info!("!{} already up-to-date", mr.iid);
         }
         Some(parent_real) => {
