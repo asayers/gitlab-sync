@@ -1,16 +1,18 @@
 extern crate docopt;
-extern crate gitlab;
 extern crate failure;
 extern crate git2;
-#[macro_use] extern crate log;
+extern crate gitlab;
 extern crate env_logger;
-#[macro_use] extern crate serde_derive;
+#[macro_use]
+extern crate log;
+#[macro_use]
+extern crate serde_derive;
 extern crate serde;
 
-use std::process::Command;
+use git2::{Commit, Repository, Signature, Time};
+use gitlab::{Gitlab, MergeRequest, MergeRequestState, MergeRequestStateFilter, ProjectId};
 use std::collections::BTreeSet;
-use gitlab::{Gitlab, ProjectId, MergeRequestStateFilter, MergeRequestState, MergeRequest};
-use git2::{Repository, Commit, Time, Signature};
+use std::process::Command;
 
 type Result<T> = std::result::Result<T, failure::Error>;
 
@@ -51,7 +53,8 @@ fn main() -> Result<()> {
         gl.merge_requests(project_id).unwrap()
     } else {
         // TODO: only get MRs which changed since last_update()
-        gl.merge_requests_with_state(project_id, MergeRequestStateFilter::Opened).unwrap()
+        gl.merge_requests_with_state(project_id, MergeRequestStateFilter::Opened)
+            .unwrap()
     };
     for mr in mrs {
         import_mr(&args, &gl, project_id, &mut repo, mr);
@@ -59,15 +62,31 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut Repository, mr: MergeRequest) {
+fn import_mr(
+    args: &Args,
+    gl: &Gitlab,
+    project_id: ProjectId,
+    repo: &mut Repository,
+    mr: MergeRequest,
+) {
     let refname = format!("refs/heads/git-series/gitlab/{}", mr.iid);
     let mut tree = repo.treebuilder(None).unwrap();
 
     // Set base/series gitlinks
-    let target = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.target_branch))
-                            { Ok(x) => x, Err(e) => { error!("{:?}", e); return (); } };
-    let source = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.source_branch))
-                            { Ok(x) => x, Err(e) => { error!("{:?}", e); return (); } };
+    let target = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.target_branch)) {
+        Ok(x) => x,
+        Err(e) => {
+            error!("{:?}", e);
+            return ();
+        }
+    };
+    let source = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.source_branch)) {
+        Ok(x) => x,
+        Err(e) => {
+            error!("{:?}", e);
+            return ();
+        }
+    };
     // let base = if repo.graph_descendant_of(source, target).unwrap() {
     //     // it's already merged! let's not update the base.
     //     // TODO
@@ -76,7 +95,7 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     //     repo.merge_base(target, source).unwrap()
     // };
     let base = repo.merge_base(target, source).unwrap();
-    tree.insert("base",   base  , 0o160000).unwrap();
+    tree.insert("base", base, 0o160000).unwrap();
     tree.insert("series", source, 0o160000).unwrap();
 
     // Handle notes
@@ -84,18 +103,30 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     let mut ackers = BTreeSet::new();
     if mr.user_notes_count > 0 {
         for note in gl.merge_request_notes(project_id, mr.iid).unwrap() {
-            if note.system { continue; }
-            let contents = format!("From: {} <{}>\nDate: {}\n\n{}\n", note.author.name, lookup_email(&note.author.name).trim(), note.created_at.to_rfc2822(), note.body);
+            if note.system {
+                continue;
+            }
+            let contents = format!(
+                "From: {} <{}>\nDate: {}\n\n{}\n",
+                note.author.name,
+                lookup_email(&note.author.name).trim(),
+                note.created_at.to_rfc2822(),
+                note.body
+            );
             let blob = repo.blob(contents.as_bytes()).unwrap();
-            notes_tree.insert(&format!("{}", note.id), blob, 0o100644).unwrap();
-            if note.body.contains("LGTM") ||
-                    note.body.contains("+1") ||
-                    note.body.contains("Looks good") {
-                ackers.insert(note.author.name);  // FIXME: this ^ may be too loose
+            notes_tree
+                .insert(&format!("{}", note.id), blob, 0o100644)
+                .unwrap();
+            if note.body.contains("LGTM")
+                || note.body.contains("+1")
+                || note.body.contains("Looks good")
+            {
+                ackers.insert(note.author.name); // FIXME: this ^ may be too loose
             }
         }
     }
-    tree.insert("notes", notes_tree.write().unwrap(), 0o040000).unwrap();
+    tree.insert("notes", notes_tree.write().unwrap(), 0o040000)
+        .unwrap();
 
     // Make cover msg
     let mut sections = vec![];
@@ -105,23 +136,43 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     }
     title.push(&mr.title);
     sections.push(title.join(" "));
-    if let Some(desc) = mr.description { sections.push(desc); }
+    if let Some(desc) = mr.description {
+        sections.push(desc);
+    }
     sections.push(format!("Closes !{}", mr.iid));
     let mut tags = vec![];
     if let Some(asgn) = mr.assignee {
         if ackers.remove(&asgn.name) {
-            tags.push(format!("Reviewed-by: {} <{}>", asgn.name, lookup_email(&asgn.name).trim()));
+            tags.push(format!(
+                "Reviewed-by: {} <{}>",
+                asgn.name,
+                lookup_email(&asgn.name).trim()
+            ));
         } else {
-            tags.push(format!("Assigned-to: {} <{}>", asgn.name, lookup_email(&asgn.name).trim()));
+            tags.push(format!(
+                "Assigned-to: {} <{}>",
+                asgn.name,
+                lookup_email(&asgn.name).trim()
+            ));
         }
     }
     for acker in ackers {
-        tags.push(format!("Acked-by: {} <{}>", acker, lookup_email(&acker).trim()));
+        tags.push(format!(
+            "Acked-by: {} <{}>",
+            acker,
+            lookup_email(&acker).trim()
+        ));
     }
-    for asgn in mr.assignees.iter().flat_map(|x|x) {
-        tags.push(format!("Cc: {} <{}>", asgn.name, lookup_email(&asgn.name).trim()));
+    for asgn in mr.assignees.iter().flat_map(|x| x) {
+        tags.push(format!(
+            "Cc: {} <{}>",
+            asgn.name,
+            lookup_email(&asgn.name).trim()
+        ));
     }
-    if !tags.is_empty() { sections.push(tags.join("\n")); }
+    if !tags.is_empty() {
+        sections.push(tags.join("\n"));
+    }
     let cover_msg = sections.join("\n\n") + "\n";
     let blob = repo.blob(cover_msg.as_bytes()).unwrap();
     tree.insert("cover", blob, 0o100644).unwrap();
@@ -130,22 +181,38 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     let tree_oid = tree.write().unwrap();
     let tree_ref = repo.find_tree(tree_oid).unwrap();
     let ts = Time::new(mr.updated_at.timestamp(), 0);
-    let author_sig = Signature::new(format_name(&mr.author.name), format_name(&lookup_email(&mr.author.name)), &ts).unwrap();
+    let author_sig = Signature::new(
+        format_name(&mr.author.name),
+        format_name(&lookup_email(&mr.author.name)),
+        &ts,
+    ).unwrap();
     let committer_sig = repo.signature().unwrap();
     let msg = format!("Import latest version of !{}", mr.iid);
     let parent_hack = repo.find_commit(source).unwrap();
     match refname_to_commit(&repo, &refname).unwrap() {
         None => {
-            repo.commit(Some(&refname), &author_sig, &committer_sig, &msg, &tree_ref,
-                &[&parent_hack]).unwrap();
+            repo.commit(
+                Some(&refname),
+                &author_sig,
+                &committer_sig,
+                &msg,
+                &tree_ref,
+                &[&parent_hack],
+            ).unwrap();
             println!("Created !{}", mr.iid);
         }
         Some(ref parent) if parent.tree_id() == tree_oid && !args.flag_force => {
             info!("!{} already up-to-date", mr.iid);
         }
         Some(parent_real) => {
-            repo.commit(Some(&refname), &author_sig, &committer_sig, &msg, &tree_ref,
-                &[&parent_real, &parent_hack]).unwrap();
+            repo.commit(
+                Some(&refname),
+                &author_sig,
+                &committer_sig,
+                &msg,
+                &tree_ref,
+                &[&parent_real, &parent_hack],
+            ).unwrap();
             println!("Updated !{}", mr.iid);
         }
     }
@@ -159,18 +226,27 @@ fn refname_to_commit<'a>(repo: &'a Repository, refname: &str) -> Result<Option<C
 }
 
 fn git_fetch(remote: &str) {
-    Command::new("git").args(&["fetch", remote]).spawn().unwrap();
+    Command::new("git")
+        .args(&["fetch", remote])
+        .spawn()
+        .unwrap();
 }
 
 fn lookup_email(author: &str) -> String {
-    String::from_utf8(Command::new("git").args(
-        &["log",
-          "-1",
-          "--pretty=%aE",
-          "--regexp-ignore-case",
-          &format!("--author={}", author),
-          "master"]
-        ).output().unwrap().stdout).unwrap()
+    String::from_utf8(
+        Command::new("git")
+            .args(&[
+                "log",
+                "-1",
+                "--pretty=%aE",
+                "--regexp-ignore-case",
+                &format!("--author={}", author),
+                "master",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    ).unwrap()
 }
 
 fn format_name(name: &str) -> &str {
