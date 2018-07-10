@@ -1,8 +1,8 @@
 extern crate gitlab;
 extern crate git2;
 extern crate clap;
-extern crate loggerv;
 #[macro_use] extern crate log;
+extern crate env_logger;
 
 use std::process::Command;
 use std::collections::BTreeSet;
@@ -14,12 +14,11 @@ const REMOTE: &str = "origin";
 
 fn main() {
     let args = App::new("app")
-            .arg(Arg::with_name("v").short("v").multiple(true).help("Sets the level of verbosity"))
             .arg(Arg::with_name("all").short("a").help("Download all MRs (default is open only)"))
             .arg(Arg::with_name("force").short("f").help("Update all MRs (even unchanged)"))
             .get_matches();
 
-    loggerv::init_with_verbosity(args.occurrences_of("v")).unwrap();
+    env_logger::init();
 
     let mut repo = Repository::open_from_env().unwrap();
     info!("Connected to local repo at {:?}", repo.path());
