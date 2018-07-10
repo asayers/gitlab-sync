@@ -1,5 +1,7 @@
 extern crate docopt;
 extern crate failure;
+#[macro_use]
+extern crate lazy_static;
 extern crate git2;
 extern crate gitlab;
 extern crate env_logger;
@@ -26,15 +28,22 @@ Options:
     -f, --force   Update all MRs (even unchanged)
 ";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct Args {
     flag_all: bool,
     flag_force: bool,
 }
 
+lazy_static! {
+    static ref ARGS: Args = docopt::Docopt::new(USAGE)
+        .and_then(|x| x.parse())
+        .and_then(|x| x.deserialize())
+        .unwrap();
+}
+
 fn main() -> Result<()> {
-    let args: Args = docopt::Docopt::new(USAGE)?.parse()?.deserialize()?;
     env_logger::init();
+    info!("{:#?}", *ARGS);
 
     let mut repo = Repository::open_from_env()?;
     info!("Connected to local repo at {:?}", repo.path());
@@ -49,7 +58,7 @@ fn main() -> Result<()> {
     println!("Fetching from {}", REMOTE);
     git_fetch(REMOTE);
 
-    let mrs = if args.flag_all {
+    let mrs = if ARGS.flag_all {
         gl.merge_requests(project_id).unwrap()
     } else {
         // TODO: only get MRs which changed since last_update()
@@ -57,13 +66,12 @@ fn main() -> Result<()> {
             .unwrap()
     };
     for mr in mrs {
-        import_mr(&args, &gl, project_id, &mut repo, mr);
+        import_mr(&gl, project_id, &mut repo, mr);
     }
     Ok(())
 }
 
 fn import_mr(
-    args: &Args,
     gl: &Gitlab,
     project_id: ProjectId,
     repo: &mut Repository,
@@ -201,7 +209,7 @@ fn import_mr(
             ).unwrap();
             println!("Created !{}", mr.iid);
         }
-        Some(ref parent) if parent.tree_id() == tree_oid && !args.flag_force => {
+        Some(ref parent) if parent.tree_id() == tree_oid && !ARGS.flag_force => {
             info!("!{} already up-to-date", mr.iid);
         }
         Some(parent_real) => {
