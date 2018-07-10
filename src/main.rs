@@ -1,4 +1,5 @@
 extern crate gitlab;
+extern crate failure;
 extern crate git2;
 extern crate clap;
 #[macro_use] extern crate log;
@@ -10,9 +11,11 @@ use gitlab::{Gitlab, ProjectId, MergeRequestStateFilter, MergeRequestState, Merg
 use git2::{Repository, Commit, Time, Signature};
 use clap::{Arg, App, ArgMatches};
 
+type Result<T> = std::result::Result<T, failure::Error>;
+
 const REMOTE: &str = "origin";
 
-fn main() {
+fn main() -> Result<()> {
     let args = App::new("app")
             .arg(Arg::with_name("all").short("a").help("Download all MRs (default is open only)"))
             .arg(Arg::with_name("force").short("f").help("Update all MRs (even unchanged)"))
@@ -20,12 +23,12 @@ fn main() {
 
     env_logger::init();
 
-    let mut repo = Repository::open_from_env().unwrap();
+    let mut repo = Repository::open_from_env()?;
     info!("Connected to local repo at {:?}", repo.path());
-    let config = repo.config().unwrap();
-    let gitlab_host = config.get_string("gitlab.url").unwrap();
-    let gitlab_token = config.get_string("gitlab.privateToken").unwrap();
-    let project_id = ProjectId::new(config.get_i64("gitlab.projectId").unwrap() as u64);
+    let config = repo.config()?;
+    let gitlab_host = config.get_string("gitlab.url")?;
+    let gitlab_token = config.get_string("gitlab.privateToken")?;
+    let project_id = ProjectId::new(config.get_i64("gitlab.projectId")? as u64);
 
     let gl = Gitlab::new_insecure(&gitlab_host, gitlab_token).unwrap();
     info!("Connected to gitlab at {}", gitlab_host);
@@ -42,6 +45,7 @@ fn main() {
     for mr in mrs {
         import_mr(&args, &gl, project_id, &mut repo, mr);
     }
+    Ok(())
 }
 
 fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut Repository, mr: MergeRequest) {
@@ -136,7 +140,7 @@ fn import_mr(args: &ArgMatches, gl: &Gitlab, project_id: ProjectId, repo: &mut R
     }
 }
 
-fn refname_to_commit<'a>(repo: &'a Repository, refname: &str) -> Result<Option<Commit<'a>>, git2::Error> {
+fn refname_to_commit<'a>(repo: &'a Repository, refname: &str) -> Result<Option<Commit<'a>>> {
     Ok(match repo.refname_to_id(refname) {
         Ok(oid) => Some(repo.find_commit(oid)?),
         Err(_) => None,
