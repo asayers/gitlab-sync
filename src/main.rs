@@ -1,9 +1,12 @@
 extern crate docopt;
+#[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate lazy_static;
 extern crate git2;
 extern crate gitlab;
+#[macro_use]
+extern crate failure_derive;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
@@ -41,6 +44,14 @@ lazy_static! {
         .unwrap();
 }
 
+#[derive(Debug, Fail)]
+enum Error {
+    #[fail(display = "Error deferencing series branch")]
+    TargetNotFound(#[cause] git2::Error),
+    #[fail(display = "Error deferencing base branch")]
+    SourceNotFound(#[cause] git2::Error),
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     info!("{:#?}", *ARGS);
@@ -56,7 +67,7 @@ fn main() -> Result<()> {
     info!("Connected to gitlab at {}", gitlab_host);
 
     println!("Fetching from {}", REMOTE);
-    git_fetch(REMOTE);
+    git_fetch(REMOTE).unwrap_or_else(|e| error!("{}", e));
 
     let mrs = if ARGS.flag_all {
         gl.merge_requests(project_id).unwrap()
@@ -66,138 +77,144 @@ fn main() -> Result<()> {
             .unwrap()
     };
     for mr in mrs {
-        import_mr(&gl, project_id, &mut repo, mr);
+        let notes = gl.merge_request_notes(project_id, mr.iid).unwrap();
+        let mr = MR::new(&mut repo, mr, notes).unwrap();
+        import_mr(&mut repo, mr).unwrap_or_else(|e| error!("{}", e));
     }
     Ok(())
 }
 
-fn import_mr(
-    gl: &Gitlab,
-    project_id: ProjectId,
-    repo: &mut Repository,
+struct MR {
+    source: git2::Oid,
+    target: git2::Oid,
     mr: MergeRequest,
-) {
-    let refname = format!("refs/heads/git-series/gitlab/{}", mr.iid);
-    let mut tree = repo.treebuilder(None).unwrap();
+    notes: Vec<gitlab::Note>,
+}
 
-    // Set base/series gitlinks
-    let target = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.target_branch)) {
-        Ok(x) => x,
-        Err(e) => {
-            error!("{:?}", e);
-            return ();
-        }
-    };
-    let source = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.source_branch)) {
-        Ok(x) => x,
-        Err(e) => {
-            error!("{:?}", e);
-            return ();
-        }
-    };
-    // let base = if repo.graph_descendant_of(source, target).unwrap() {
-    //     // it's already merged! let's not update the base.
-    //     // TODO
-    //     repo.refname_to_id(&format!("{}:base", refname)).unwrap()
-    // } else {
-    //     repo.merge_base(target, source).unwrap()
-    // };
-    let base = repo.merge_base(target, source).unwrap();
-    tree.insert("base", base, 0o160000).unwrap();
-    tree.insert("series", source, 0o160000).unwrap();
+impl MR {
+    fn new(repo: &mut Repository, mr: MergeRequest, notes: Vec<gitlab::Note>) -> Result<MR> {
+        // Set base/series gitlinks
+        let target = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.target_branch))
+        {
+            Ok(x) => x,
+            Err(e) => bail!(Error::TargetNotFound(e)),
+        };
+        let source = match repo.refname_to_id(&format!("refs/remotes/origin/{}", mr.source_branch))
+        {
+            Ok(x) => x,
+            Err(e) => bail!(Error::SourceNotFound(e)),
+        };
+        Ok(MR {
+            source,
+            target,
+            mr,
+            notes,
+        })
+    }
 
-    // Handle notes
-    let mut notes_tree = repo.treebuilder(None).unwrap();
-    let mut ackers = BTreeSet::new();
-    if mr.user_notes_count > 0 {
-        for note in gl.merge_request_notes(project_id, mr.iid).unwrap() {
-            if note.system {
-                continue;
+    /// Builds a tree and writes it to the repo.  Doesn't modify any refs.
+    fn to_tree(&self, repo: &mut Repository) -> Result<git2::Oid> {
+        let mut tree = repo.treebuilder(None)?;
+
+        // let base = if repo.graph_descendant_of(source, target).unwrap() {
+        //     // it's already merged! let's not update the base.
+        //     // TODO
+        //     repo.refname_to_id(&format!("{}:base", refname)).unwrap()
+        // } else {
+        //     repo.merge_base(target, source).unwrap()
+        // };
+        let base = repo.merge_base(self.target, self.source)?;
+        tree.insert("base", base, 0o160000)?;
+        tree.insert("series", self.source, 0o160000)?;
+
+        // Handle notes
+        let mut notes_tree = repo.treebuilder(None)?;
+        let mut ackers = BTreeSet::new();
+        if self.mr.user_notes_count > 0 {
+            for note in &self.notes {
+                if note.system {
+                    continue;
+                }
+                let contents = format!(
+                    "From: {} <{}>\nDate: {}\n\n{}\n",
+                    note.author.name,
+                    lookup_email(&note.author.name)?,
+                    note.created_at.to_rfc2822(),
+                    note.body
+                );
+                let blob = repo.blob(contents.as_bytes())?;
+                notes_tree.insert(&format!("{}", note.id), blob, 0o100644)?;
+                if note.body.contains("LGTM")
+                    || note.body.contains("+1")
+                    || note.body.contains("Looks good")
+                {
+                    ackers.insert(note.author.name.clone()); // FIXME: this ^ may be too loose
+                }
             }
-            let contents = format!(
-                "From: {} <{}>\nDate: {}\n\n{}\n",
-                note.author.name,
-                lookup_email(&note.author.name).trim(),
-                note.created_at.to_rfc2822(),
-                note.body
-            );
-            let blob = repo.blob(contents.as_bytes()).unwrap();
-            notes_tree
-                .insert(&format!("{}", note.id), blob, 0o100644)
-                .unwrap();
-            if note.body.contains("LGTM")
-                || note.body.contains("+1")
-                || note.body.contains("Looks good")
-            {
-                ackers.insert(note.author.name); // FIXME: this ^ may be too loose
+        }
+        tree.insert("notes", notes_tree.write()?, 0o040000)?;
+
+        // Make cover msg
+        let mut sections = vec![];
+        let mut title = vec![];
+        if self.mr.state == MergeRequestState::Closed || self.mr.state == MergeRequestState::Merged
+        {
+            title.push("[Closed]");
+        }
+        title.push(&self.mr.title);
+        sections.push(title.join(" "));
+        if let Some(ref desc) = self.mr.description {
+            sections.push(desc.clone());
+        }
+        sections.push(format!("Closes !{}", self.mr.iid));
+        let mut tags = vec![];
+        if let Some(ref asgn) = self.mr.assignee {
+            if ackers.remove(&asgn.name) {
+                tags.push(format!(
+                    "Reviewed-by: {} <{}>",
+                    asgn.name,
+                    lookup_email(&asgn.name)?
+                ));
+            } else {
+                tags.push(format!(
+                    "Assigned-to: {} <{}>",
+                    asgn.name,
+                    lookup_email(&asgn.name)?
+                ));
             }
         }
-    }
-    tree.insert("notes", notes_tree.write().unwrap(), 0o040000)
-        .unwrap();
-
-    // Make cover msg
-    let mut sections = vec![];
-    let mut title = vec![];
-    if mr.state == MergeRequestState::Closed || mr.state == MergeRequestState::Merged {
-        title.push("[Closed]");
-    }
-    title.push(&mr.title);
-    sections.push(title.join(" "));
-    if let Some(desc) = mr.description {
-        sections.push(desc);
-    }
-    sections.push(format!("Closes !{}", mr.iid));
-    let mut tags = vec![];
-    if let Some(asgn) = mr.assignee {
-        if ackers.remove(&asgn.name) {
-            tags.push(format!(
-                "Reviewed-by: {} <{}>",
-                asgn.name,
-                lookup_email(&asgn.name).trim()
-            ));
-        } else {
-            tags.push(format!(
-                "Assigned-to: {} <{}>",
-                asgn.name,
-                lookup_email(&asgn.name).trim()
-            ));
+        for acker in ackers {
+            tags.push(format!("Acked-by: {} <{}>", acker, lookup_email(&acker)?));
         }
-    }
-    for acker in ackers {
-        tags.push(format!(
-            "Acked-by: {} <{}>",
-            acker,
-            lookup_email(&acker).trim()
-        ));
-    }
-    for asgn in mr.assignees.iter().flat_map(|x| x) {
-        tags.push(format!(
-            "Cc: {} <{}>",
-            asgn.name,
-            lookup_email(&asgn.name).trim()
-        ));
-    }
-    if !tags.is_empty() {
-        sections.push(tags.join("\n"));
-    }
-    let cover_msg = sections.join("\n\n") + "\n";
-    let blob = repo.blob(cover_msg.as_bytes()).unwrap();
-    tree.insert("cover", blob, 0o100644).unwrap();
+        for asgn in self.mr.assignees.iter().flat_map(|x| x) {
+            tags.push(format!("Cc: {} <{}>", asgn.name, lookup_email(&asgn.name)?));
+        }
+        if !tags.is_empty() {
+            sections.push(tags.join("\n"));
+        }
+        let cover_msg = sections.join("\n\n") + "\n";
+        let blob = repo.blob(cover_msg.as_bytes())?;
+        tree.insert("cover", blob, 0o100644)?;
 
-    // commit!
-    let tree_oid = tree.write().unwrap();
-    let tree_ref = repo.find_tree(tree_oid).unwrap();
-    let ts = Time::new(mr.updated_at.timestamp(), 0);
+        // write!
+        Ok(tree.write()?)
+    }
+}
+
+fn import_mr(repo: &mut Repository, mr: MR) -> Result<()> {
+    let tree_oid = mr.to_tree(repo)?;
+    let tree_ref = repo.find_tree(tree_oid)?;
+    let ts = Time::new(mr.mr.updated_at.timestamp(), 0);
     let author_sig = Signature::new(
-        format_name(&mr.author.name),
-        format_name(&lookup_email(&mr.author.name)),
+        format_name(&mr.mr.author.name),
+        format_name(&lookup_email(&mr.mr.author.name)?),
         &ts,
-    ).unwrap();
-    let committer_sig = repo.signature().unwrap();
-    let msg = format!("Import latest version of !{}", mr.iid);
-    let parent_hack = repo.find_commit(source).unwrap();
-    match refname_to_commit(&repo, &refname).unwrap() {
+    )?;
+    let committer_sig = repo.signature()?;
+    let msg = format!("Import latest version of !{}", mr.mr.iid);
+    let parent_hack = repo.find_commit(mr.source)?;
+    let refname = format!("refs/heads/git-series/gitlab/{}", mr.mr.iid);
+    match refname_to_commit(&repo, &refname)? {
         None => {
             repo.commit(
                 Some(&refname),
@@ -206,11 +223,11 @@ fn import_mr(
                 &msg,
                 &tree_ref,
                 &[&parent_hack],
-            ).unwrap();
-            println!("Created !{}", mr.iid);
+            )?;
+            println!("Created !{}", mr.mr.iid);
         }
         Some(ref parent) if parent.tree_id() == tree_oid && !ARGS.flag_force => {
-            info!("!{} already up-to-date", mr.iid);
+            info!("!{} already up-to-date", mr.mr.iid);
         }
         Some(parent_real) => {
             repo.commit(
@@ -220,10 +237,11 @@ fn import_mr(
                 &msg,
                 &tree_ref,
                 &[&parent_real, &parent_hack],
-            ).unwrap();
-            println!("Updated !{}", mr.iid);
+            )?;
+            println!("Updated !{}", mr.mr.iid);
         }
     }
+    Ok(())
 }
 
 fn refname_to_commit<'a>(repo: &'a Repository, refname: &str) -> Result<Option<Commit<'a>>> {
@@ -233,14 +251,12 @@ fn refname_to_commit<'a>(repo: &'a Repository, refname: &str) -> Result<Option<C
     })
 }
 
-fn git_fetch(remote: &str) {
-    Command::new("git")
-        .args(&["fetch", remote])
-        .spawn()
-        .unwrap();
+fn git_fetch(remote: &str) -> Result<()> {
+    Command::new("git").args(&["fetch", remote]).spawn()?;
+    Ok(())
 }
 
-fn lookup_email(author: &str) -> String {
+fn lookup_email(author: &str) -> Result<String> {
     String::from_utf8(
         Command::new("git")
             .args(&[
@@ -251,10 +267,10 @@ fn lookup_email(author: &str) -> String {
                 &format!("--author={}", author),
                 "master",
             ])
-            .output()
-            .unwrap()
+            .output()?
             .stdout,
-    ).unwrap()
+    ).map(|x| x.trim().to_string())
+        .map_err(|e| e.into())
 }
 
 fn format_name(name: &str) -> &str {
