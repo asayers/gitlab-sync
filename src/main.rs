@@ -1,8 +1,7 @@
-extern crate docopt;
+#[macro_use]
+extern crate structopt;
 #[macro_use]
 extern crate failure;
-#[macro_use]
-extern crate lazy_static;
 extern crate git2;
 extern crate gitlab;
 #[macro_use]
@@ -10,38 +9,25 @@ extern crate failure_derive;
 extern crate env_logger;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
 
 use git2::{Commit, Repository, Signature, Time};
 use gitlab::{Gitlab, MergeRequest, MergeRequestState, MergeRequestStateFilter, ProjectId};
 use std::collections::BTreeSet;
 use std::process::Command;
+use structopt::StructOpt;
 
 type Result<T> = std::result::Result<T, failure::Error>;
 
 const REMOTE: &str = "origin";
 
-const USAGE: &str = "
-Usage: gitlab-sync [options]
-
-Options:
-    -a, --all     Download all MRs (default is open only)
-    -f, --force   Update all MRs (even unchanged)
-";
-
-#[derive(Deserialize, Debug)]
+#[derive(StructOpt, Debug)]
 struct Args {
-    flag_all: bool,
-    flag_force: bool,
-}
-
-lazy_static! {
-    static ref ARGS: Args = docopt::Docopt::new(USAGE)
-        .and_then(|x| x.parse())
-        .and_then(|x| x.deserialize())
-        .unwrap();
+    /// Download all MRs (default is open only)
+    #[structopt(short = "a", long = "--all")]
+    all: bool,
+    /// Update all MRs (even unchanged)
+    #[structopt(short = "f", long = "--force")]
+    force: bool,
 }
 
 #[derive(Debug, Fail)]
@@ -53,8 +39,9 @@ enum Error {
 }
 
 fn main() -> Result<()> {
+    let args = Args::from_args();
     env_logger::init();
-    info!("{:#?}", *ARGS);
+    info!("{:#?}", args);
 
     let mut repo = Repository::open_from_env()?;
     info!("Connected to local repo at {:?}", repo.path());
@@ -69,7 +56,7 @@ fn main() -> Result<()> {
     println!("Fetching from {}", REMOTE);
     git_fetch(REMOTE).unwrap_or_else(|e| error!("{}", e));
 
-    let mrs = if ARGS.flag_all {
+    let mrs = if args.all {
         gl.merge_requests(project_id).unwrap()
     } else {
         // TODO: only get MRs which changed since last_update()
@@ -79,7 +66,7 @@ fn main() -> Result<()> {
     for mr in mrs {
         let notes = gl.merge_request_notes(project_id, mr.iid).unwrap();
         let mr = MR::new(&mut repo, mr, notes).unwrap();
-        import_mr(&mut repo, mr).unwrap_or_else(|e| error!("{}", e));
+        import_mr(&args, &mut repo, mr).unwrap_or_else(|e| error!("{}", e));
     }
     Ok(())
 }
@@ -201,7 +188,7 @@ impl MR {
     }
 }
 
-fn import_mr(repo: &mut Repository, mr: MR) -> Result<()> {
+fn import_mr(args: &Args, repo: &mut Repository, mr: MR) -> Result<()> {
     let tree_oid = mr.to_tree(repo)?;
     let tree_ref = repo.find_tree(tree_oid)?;
     let ts = Time::new(mr.mr.updated_at.timestamp(), 0);
@@ -226,7 +213,7 @@ fn import_mr(repo: &mut Repository, mr: MR) -> Result<()> {
             )?;
             println!("Created !{}", mr.mr.iid);
         }
-        Some(ref parent) if parent.tree_id() == tree_oid && !ARGS.flag_force => {
+        Some(ref parent) if parent.tree_id() == tree_oid && !args.force => {
             info!("!{} already up-to-date", mr.mr.iid);
         }
         Some(parent_real) => {
@@ -266,11 +253,10 @@ fn lookup_email(author: &str) -> Result<String> {
                 "--regexp-ignore-case",
                 &format!("--author={}", author),
                 "master",
-            ])
-            .output()?
+            ]).output()?
             .stdout,
     ).map(|x| x.trim().to_string())
-        .map_err(|e| e.into())
+    .map_err(|e| e.into())
 }
 
 fn format_name(name: &str) -> &str {
