@@ -239,7 +239,8 @@ fn refname_to_commit<'a>(repo: &'a Repository, refname: &str) -> Result<Option<C
 }
 
 fn git_fetch(remote: &str) -> Result<()> {
-    Command::new("git").args(&["fetch", remote]).spawn()?;
+    let mut fetch = Command::new("git").args(&["fetch", remote]).spawn()?;
+    assert!(fetch.wait()?.success());
     Ok(())
 }
 
@@ -260,11 +261,11 @@ fn lookup_email(author: &str) -> Result<String> {
 }
 
 fn format_name(name: &str) -> &str {
-    let foo = name.trim();
-    if foo.is_empty() {
+    let name = name.trim();
+    if name.is_empty() {
         "UNKNOWN"
     } else {
-        foo
+        name
     }
 }
 
