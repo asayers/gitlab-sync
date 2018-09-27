@@ -32,9 +32,9 @@ struct Args {
 
 #[derive(Debug, Fail)]
 enum Error {
-    #[fail(display = "Error deferencing series branch")]
+    #[fail(display = "Error deferencing series branch.  Did you fetch first?")]
     TargetNotFound(#[cause] git2::Error),
-    #[fail(display = "Error deferencing base branch")]
+    #[fail(display = "Error deferencing base branch.  Did you fetch first?")]
     SourceNotFound(#[cause] git2::Error),
 }
 
